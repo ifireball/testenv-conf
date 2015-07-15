@@ -1,13 +1,17 @@
 #!/bin/bash
 # satellite-testing.bash - OSTF wrapper to enable Satellite testing.
 #
+set -o pipefail
+
 main() {
     get_env_configuration "$@"
     #env_json.generate
     #repo_json.generate
     #environment.init
     #environment.setup_hosts
-    hosts.setup_host satellite
+    #hosts.setup_host satellite
+    hosts.get_host_ip satellite
+    hosts.satellite.get_katello_password
 }
 
 get_env_configuration() {
@@ -35,6 +39,19 @@ environment.setup_hosts() {
     done
 }
 
+environment.setup_robotello() {
+    local venv_path="${conf_SATELLITE_OSTF_WORKSPACE}/vitrualenvs/robotello"
+    local upstream_git='https://github.com/SatelliteQE/robottelo'
+    local git_path="${conf_SATELLITE_OSTF_WORKSPACE}/git_repos/robotello"
+
+    with virtualenv --create "$venv_path" -- \
+        with git_repo \
+        --clone "$upstream_git" \
+        --checkout master \
+        "$git_path" -- \
+            robotello.setup
+}
+
 hosts.setup_host() {
     local host="${1:?}"
 
@@ -43,6 +60,21 @@ hosts.setup_host() {
         "hosts.${host}.remote.setup" \
         "hosts.remote.*" \
         "hosts.${host}.remote.*"
+}
+
+hosts.get_host_ip() {
+    local host="${1:?}"
+    local MGMT_IFACE=eth0
+
+    hosts.run_remote_functions \
+        "$host" \
+        hosts.remote.net.get_conn_ip -- "$MGMT_IFACE" 2> /dev/null
+}
+
+hosts.satellite.get_katello_password() {
+    echo 'cat /etc/katello-installer/answers.katello-installer.yaml' \
+    | testenvcli.shell satellite 2> /dev/null \
+    | yaml_extract "doc['foreman']['admin_password']"
 }
 
 hosts.repo.remote.setup() {
@@ -224,12 +256,14 @@ hosts.remote.net.get_conn_ip() {
 }
 
 hosts.remote.yum.zaprepos() {
+    set -o pipefail
     find /etc/yum.repos.d/ -mindepth 1 -maxdepth 1 -type f -print0 \
     | xargs -0 -r rpm -qf \
     | grep -v 'file .* is not owned by any package' \
     | sort -u \
     | xargs -r yum remove -y
     rm -f /etc/yum.repos.d/*
+    set +o pipefail
 }
 
 hosts.remote.yum.add_rhel_repos() {
@@ -265,15 +299,40 @@ hosts.run_remote_functions() {
     local host="${1:?}"
     local main_function="${2:?}"
     shift 2
-    local other_function_patterns=("$@")
+    local other_function_patterns=()
+    while [[ $# -gt 0 ]] && [[ "$1" != "--" ]]; do
+        other_function_patterns[${#other_function_patterns[@]}]="$1"
+        shift
+    done
     #echo bundling functions: "${other_function_patterns[@]}"
+    [[ "$1" == "--" ]] && shift
+    local function_args=("$@")
 
     {
         # Send TERM over so we get nicer output
         echo "export TERM=$TERM"
         glob_functions "$main_function" "${other_function_patterns[@]}"
-        echo "$main_function"
+        echo "$main_function $(shell_quote "${function_args[@]}")"
     } | testenvcli.shell "$host"
+}
+
+robotello.setup() {
+    pip install reqirements.txt
+    pip install nose PyVirtualDisplay
+    cat > 'robottelo.properties' <<EOF
+[main]
+server.hostname=$(hosts.get_host_ip satellite)
+server.ssh.key_private=${conf_SATELLITE_OSTF_WORKSPACE}/id_rsa \
+server.ssh.username=root
+project=sat
+locale=en_US
+remote=0
+smoke=0
+
+[foreman]
+admin.username=admin
+admin.password=$(hosts.satellite.get_katello_password)
+EOF
 }
 
 testenvcli.init() {
@@ -293,6 +352,104 @@ testenvcli.shell() {
     local host="${1:?}"
     with workspace_dir -- \
         testenvcli shell "$host"
+}
+
+virtualenv.create() {
+    local venv_path="${1:?}"
+    local activate_script="$venv_path/bin/activate"
+    if [[ -r "$activate_script" ]]; then
+        echo "Python virtual env at $venv_path seems to already exist" 1>&2
+    else
+        virtualenv "$venv_path"
+    fi
+}
+
+virtualenv.get() {
+    local create=''
+
+    local opts
+    opts="$(getopt -n virtualenv -o c -l create -- "$@")" \
+    || return 1
+    eval set -- "$opts"
+    while true; do
+        case "$1" in
+            -c|--create) create=true;;
+            --) shift; break;;
+            *)  return 1;
+        esac
+        shift
+    done
+
+    local venv_path="${1:?}"
+    local activate_script="$venv_path/bin/activate"
+    [[ "$create" ]] && virtualenv.create "$venv_path"
+    if [[ -r "$activate_script" ]]; then
+        source "$activate_script"
+        echo "$venv_path"
+        return 0
+    else
+        echo "Python virtual env at $venv_path not found" 1>&2
+        return 1
+    fi
+}
+
+virtualenv.return() {
+    local venv_path="${1:?}"
+
+    if [[ "$venv_path" == "$VIRTUAL_ENV" ]]; then
+        # deactivate should be defined by the virtualenv we're in
+        decativate
+    else
+        echo "Trying to leave a virtualenv we're not in ($venv_path)" 1>&2
+        return 1
+    fi
+}
+
+git_repo.clone_here() {
+    local remote="${1:?}"
+
+    git clone "$remote" . \
+    || git remote show -n origin \
+    | sed -nre 's/^\s*Fetch URL:\s+(.*)\s*$/\1/p' \
+    | grep -qxF "$remote"
+}
+
+git_repo.checkout_here() {
+    local refspec="${1:?}"
+
+    git checkout -f "$refspec"
+}
+
+git_repo.get() {
+    local clone=''
+    local checkout=''
+
+    local opts
+    opts="$(getopt -n virtualenv -o '' -l clone:,checkout: -- "$@")" \
+    || return 1
+    eval set -- "$opts"
+    while true; do
+        case "$1" in
+            --clone) clone="$2"; shift;;
+            --checkout) checkout="$2"; shift;;
+            --) shift; break;;
+            *)  return 1;
+        esac
+        shift
+    done
+
+    local repo_path="${1:?}"
+    directory.get "$repo_path" || return 1
+    if [[ "$clone" ]]; then
+        git_repo.clone_here "$clone" || return 2
+    fi
+    if [[ "$checkout" ]]; then
+        git_repo.checkout_here "$checkout" || return 3
+    fi
+}
+
+git_repo.return() {
+    directory.return "$@"
 }
 
 env_json.get() {
@@ -413,6 +570,16 @@ print dumps(load(stdin), indent=4)
     python -c "$yaml_to_json_py"
 }
 
+yaml_extract() {
+    local yaml_extract_py="
+from sys import stdin, argv
+from yaml import load
+doc=load(stdin)
+print '\n'.join(str(eval(arg)) for arg in argv[1:])
+    "
+    python -c "$yaml_extract_py" "$@"
+}
+
 glob_functions() {
     local patterns=("$@")
     declare -F \
@@ -463,12 +630,13 @@ with() {
         && type -t "${cmd}.return" >> /dev/null
     then
         # Have to us a tempfile so ${cmd}.get won't run in a subshell
+        yeild_result=100
         cmd_outfile="$(mktemp)"
-        exec 10>"$cmd_outfile" 11<"$cmd_outfile"
+        exec 200>"$cmd_outfile" 201<"$cmd_outfile"
         rm -f "$cmd_outfile"
-        if "${cmd}.get" "${cmd_args[@]}" >&10 ; then
-            cmd_output="$(cat <&11)"
-            exec 10>&- 11>&-
+        if "${cmd}.get" "${cmd_args[@]}" >&200 ; then
+            cmd_output="$(cat <&201)"
+            exec 200>&- 201>&-
             declare -g "$varname"="$cmd_output"
             # echo running: "${yield[@]}"
             "${yield[@]}"
@@ -476,12 +644,17 @@ with() {
             unset "$varname"
             ${cmd}.return "$cmd_output" "${cmd_args[@]}"
         fi
-        exec 10>&- 11>&-
+        exec 200>&- 201>&-
         return $yield_result
     else
         echo "${cmd} context definition not found!" 1>&2
         return 1
     fi
+}
+
+shell_quote() {
+    local singlequote="'"
+    printf " '%s'" "${@//\'/'\\$singlequote'}"
 }
 
 main "$@"
