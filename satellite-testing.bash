@@ -10,8 +10,9 @@ main() {
     #environment.init
     #environment.setup_hosts
     #hosts.setup_host satellite
-    hosts.get_host_ip satellite
-    hosts.satellite.get_katello_password
+    #hosts.get_host_ip satellite
+    #hosts.satellite.get_katello_password
+    environment.run_robotello "$@"
 }
 
 get_env_configuration() {
@@ -39,17 +40,8 @@ environment.setup_hosts() {
     done
 }
 
-environment.setup_robotello() {
-    local venv_path="${conf_SATELLITE_OSTF_WORKSPACE}/vitrualenvs/robotello"
-    local upstream_git='https://github.com/SatelliteQE/robottelo'
-    local git_path="${conf_SATELLITE_OSTF_WORKSPACE}/git_repos/robotello"
-
-    with virtualenv --create "$venv_path" -- \
-        with git_repo \
-        --clone "$upstream_git" \
-        --checkout master \
-        "$git_path" -- \
-            robotello.setup
+environment.run_robotello() {
+    robotello "$@"
 }
 
 hosts.setup_host() {
@@ -316,8 +308,10 @@ hosts.run_remote_functions() {
     } | testenvcli.shell "$host"
 }
 
-robotello.setup() {
-    pip install reqirements.txt
+robotello.setup_here() {
+    # We need PyYAML to Parse Katello configuration
+    pip install PyYAML
+    pip install -r requirements.txt
     pip install nose PyVirtualDisplay
     cat > 'robottelo.properties' <<EOF
 [main]
@@ -333,6 +327,24 @@ smoke=0
 admin.username=admin
 admin.password=$(hosts.satellite.get_katello_password)
 EOF
+}
+
+robotello.invoke_here() {
+    robotello.setup_here
+    nosetests "$@"
+}
+
+robotello() {
+    local venv_path="${conf_SATELLITE_OSTF_WORKSPACE}/virtualenvs/robotello"
+    local upstream_git='https://github.com/SatelliteQE/robottelo'
+    local git_path="${conf_SATELLITE_OSTF_WORKSPACE}/git_repos/robotello"
+
+    with virtualenv --create "$venv_path" -- \
+        with git_repo \
+        --clone "$upstream_git" \
+        --checkout master \
+        "$git_path" -- \
+            robotello.invoke_here "$@"
 }
 
 testenvcli.init() {
@@ -360,7 +372,7 @@ virtualenv.create() {
     if [[ -r "$activate_script" ]]; then
         echo "Python virtual env at $venv_path seems to already exist" 1>&2
     else
-        virtualenv "$venv_path"
+        virtualenv -q "$venv_path" 1>&2
     fi
 }
 
@@ -398,7 +410,7 @@ virtualenv.return() {
 
     if [[ "$venv_path" == "$VIRTUAL_ENV" ]]; then
         # deactivate should be defined by the virtualenv we're in
-        decativate
+        deactivate
     else
         echo "Trying to leave a virtualenv we're not in ($venv_path)" 1>&2
         return 1
@@ -408,7 +420,7 @@ virtualenv.return() {
 git_repo.clone_here() {
     local remote="${1:?}"
 
-    git clone "$remote" . \
+    git clone -q "$remote" . 1>&2 \
     || git remote show -n origin \
     | sed -nre 's/^\s*Fetch URL:\s+(.*)\s*$/\1/p' \
     | grep -qxF "$remote"
@@ -417,7 +429,7 @@ git_repo.clone_here() {
 git_repo.checkout_here() {
     local refspec="${1:?}"
 
-    git checkout -f "$refspec"
+    git checkout -q -f "$refspec" 1>&2
 }
 
 git_repo.get() {
@@ -425,7 +437,7 @@ git_repo.get() {
     local checkout=''
 
     local opts
-    opts="$(getopt -n virtualenv -o '' -l clone:,checkout: -- "$@")" \
+    opts="$(getopt -n git_repo -o '' -l clone:,checkout: -- "$@")" \
     || return 1
     eval set -- "$opts"
     while true; do
@@ -439,7 +451,7 @@ git_repo.get() {
     done
 
     local repo_path="${1:?}"
-    directory.get "$repo_path" || return 1
+    directory.get --mkdir "$repo_path" || return 1
     if [[ "$clone" ]]; then
         git_repo.clone_here "$clone" || return 2
     fi
@@ -549,7 +561,23 @@ tempfile.return() {
 }
 
 directory.get() {
+    local create=''
+
+    local opts
+    opts="$(getopt -n directory -o c -l create,mkdir -- "$@")" \
+    || return 1
+    eval set -- "$opts"
+    while true; do
+        case "$1" in
+            -c|--mkdir|--create) create=true;;
+            --) shift; break;;
+            *)  return 1;
+        esac
+        shift
+    done
+
     local directory="${1:?}"
+    [[ "$create" ]] && mkdir -p "$directory"
     pwd
     #echo Entering directory: "$directory" 1>&2
     cd "$directory"
