@@ -5,6 +5,7 @@ set -o pipefail
 
 main() {
     get_env_configuration "$@"
+    verbs.base
     #env_json.generate
     #repo_json.generate
     #environment.init
@@ -12,7 +13,7 @@ main() {
     #hosts.setup_host satellite
     #hosts.get_host_ip satellite
     #hosts.satellite.get_katello_password
-    environment.run_robotello "$@"
+    #environment.run_robotello "$@"
 }
 
 get_env_configuration() {
@@ -22,6 +23,18 @@ get_env_configuration() {
     # The directory under which OSTF should setup the environment
     local ws_default="$HOME/src/workspace/satellite-testing"
     conf_SATELLITE_OSTF_WORKSPACE="${SATELLITE_OSTF_WORKSPACE:-"$ws_default"}"
+    local lagocli_default="/usr/bin/lagocli"
+    conf_SATELLITE_OSTF_LAGOCLI="${SATELLITE_OSTF_LAGOCLI:-"$lagocli_default"}"
+}
+
+verbs.base() {
+    # Reach base setup level with all VMs up and with yum repos
+    environment.init
+    environment.start
+    hosts.set_host_level 'repo' 'playground'
+    for host in satellite host1 host2; do
+        hosts.set_host_level "$host" 'base'
+    done
 }
 
 environment.init() {
@@ -34,24 +47,30 @@ environment.start() {
     testenvcli.start
 }
 
-environment.setup_hosts() {
-    for host in repo satellite; do
-        hosts.setup_host "$host"
-    done
-}
-
 environment.run_robotello() {
     robotello "$@"
 }
 
-hosts.setup_host() {
+hosts.set_host_level() {
     local host="${1:?}"
+    local level="${2:?}"
+
+    if [[ ! "$level" =~ ^(base|palyground)$ ]]; then
+        level='base'
+    fi
+
+    local remote_function="hosts.${host}.remote.set_level"
+    if ! is_function "$remote_function"; then
+        remote_function="hosts.remote.set_level"
+    fi
 
     hosts.run_remote_functions \
         "$host" \
-        "hosts.${host}.remote.setup" \
+        "$remote_function" \
         "hosts.remote.*" \
-        "hosts.${host}.remote.*"
+        "hosts.${host}.remote.*" \
+        -- \
+        "$level"
 }
 
 hosts.get_host_ip() {
@@ -69,27 +88,12 @@ hosts.satellite.get_katello_password() {
     | yaml_extract "doc['foreman']['admin_password']"
 }
 
-hosts.repo.remote.setup() {
-    declare -g REPOMAN_CONF='/etc/repoman.conf'
-    declare -g REPO_BASE_DIR='/var/www/repos'
-    declare -g REPO_BASE_URL='repos'
-
-    local sat6_brew_tag='satellite-6.1.0-rhel-7-candidate'
+hosts.repo.remote.set_level() {
+    local level="${1:?}"
 
     hosts.remote.yum.zaprepos
     hosts.remote.yum.add_rhel_repos
-    hosts.remote.yum.addrepo \
-        'ci-tools' \
-        'http://ci-web.eng.lab.tlv.redhat.com/repos/ci-tools/el7'
-    hosts.remote.yum.addrepo \
-        'rhpkg' \
-        'http://download.lab.bos.redhat.com/rel-eng/dist-git/rhel/$releasever/'
-    hosts.repo.remote.setup.repoman
     hosts.repo.remote.setup.httpd
-    hosts.repo.remote.setup.brew_tag_repo \
-        'satellite' \
-        "$sat6_brew_tag" \
-        inherit
 }
 
 hosts.satellite.remote.setup() {
@@ -103,42 +107,25 @@ hosts.satellite.remote.setup() {
     hosts.remote.satellite.setup.satellite
 }
 
-hosts.repo.remote.setup.repoman() {
-    yum install -y createrepo repoman brewkoji
-    cat > "$REPOMAN_CONF" <<EOF
-[source.KojiBuildSource]
-koji_server = http://brewhub.devel.redhat.com/brewhub
-koji_topurl = http://download.devel.redhat.com/brewroot
-
-[store.RPMStore]
-# Some links that are expected by some rhel distro flavours
-extra_symlinks =
-	el6:6Server
-	el7:7Server
-	el7:7Everything
-# no need for src.rpms
-with_srcrpms = false
-# we don't need sources dir ds
-with_sources = false
-# don't create rpm subdir
-rpm_dir =
-EOF
-}
-
 hosts.repo.remote.setup.httpd() {
     local HTTPD_CONF='/etc/httpd/conf.d/repos.conf'
 
-    yum install -y httpd
-    cat > "$HTTPD_CONF" <<EOF
-alias /$REPO_BASE_URL $REPO_BASE_DIR
+    yum install -y httpd mod_ssl yum-plugin-fastmirror
+    python > "$HTTPD_CONF" <<EOF
+import sys
+sys.path.insert(0, '/usr/share/yum-cli')
+import cli
 
-<Directory $REPO_BASE_DIR>
-    Options Indexes FollowSymLinks
-    AllowOverride None
-    Require all granted
-</Directory>
+TEMPLATE = '''RewriteRule ^/proxy/{key}/(.*) {url}\$1 [P] '''
+
+if __name__ == '__main__':
+    ybc = cli.YumBaseCli()
+    ybc.getOptionsConfig(['repolist', '-q'])
+    print 'RewriteEngine On'
+    print 'SSLProxyEngine On'
+    for repo in ybc.repos.repos.itervalues():
+        print TEMPLATE.format(key=repo.id, url=repo.urls[0])
 EOF
-    install -o root -g root -m 755 -d "$REPO_BASE_DIR"
     systemctl enable httpd
     systemctl restart httpd
     firewall-cmd --permanent --add-service=http
@@ -162,7 +149,8 @@ hosts.repo.remote.setup.brew_tag_repo() {
 
 hosts.remote.satellite.setup.satellite() {
     local PRIVATE_IFACE='eth1'
-    local private_ip="$(hosts.remote.net.get_conn_ip "$PRIVATE_IFACE")"
+    local PRIVATE_CONN="$(hosts.remote.net.get_iface_conn $PRIVATE_IFACE)"
+    local private_ip="$(hosts.remote.net.get_conn_ip "$PRIVATE_CONN")"
     local dhcp_range=(${private_ip%.*}.{10,100})
     local dhcp_range="${dhcp_range[*]}"
 
@@ -190,14 +178,20 @@ hosts.remote.satellite.setup.satellite() {
         --capsule-tftp-servername "$private_ip"
 }
 
+hosts.remote.set_level() {
+    local level="${1:?}"
+
+    hosts.remote.yum.zaprepos
+}
+
 hosts.remote.net.set_static() {
     local PUBLIC_IFACE=eth0
     local PRIVATE_IFACE=eth1
-    local PUBLIC_CONN="$PUBLIC_IFACE"
+    local PUBLIC_CONN="$(hosts.remote.net.get_iface_conn $PUBLIC_IFACE)"
     local PRIVATE_CONN="$PRIVATE_IFACE"
     local PRIVATE_NET="192.168.105"
 
-    local public_ip="$(hosts.remote.net.get_conn_ip "$PUBLIC_IFACE")"
+    local public_ip="$(hosts.remote.net.get_conn_ip "$PUBLIC_CONN")"
     local private_ip="${public_ip/*./$PRIVATE_NET.}"
 
     # If local connection already exists disable and delete it
@@ -230,7 +224,8 @@ hosts.remote.net.set_self_resolv() {
     shift
 
     local PUBLIC_IFACE=eth0
-    local public_ip="$(hosts.remote.net.get_conn_ip "$PUBLIC_IFACE")"
+    local PUBLIC_CONN="$(hosts.remote.net.get_iface_conn $PUBLIC_IFACE)"
+    local public_ip="$(hosts.remote.net.get_conn_ip "$PUBLIC_CONN")"
 
     local sedp="
 \$a \
@@ -238,6 +233,16 @@ $public_ip $hostname "$@"
 /^${public_ip//\./\\.}/d
 "
     sed -ire "$sedp" /etc/hosts
+}
+
+hosts.remote.net.get_iface_conn() {
+    local iface="${1:?}"
+    for conn in $(nmcli -m tabular -t --fields uuid con show --active); do
+        conn_iface="$(nmcli -m tabular -t -f GENERAL.DEVICES con show "$conn")"
+        if [[ "$conn_iface" == "$iface" ]]; then
+            echo "$conn"
+        fi
+    done
 }
 
 hosts.remote.net.get_conn_ip() {
@@ -258,9 +263,9 @@ hosts.remote.yum.zaprepos() {
     set +o pipefail
 }
 
-hosts.remote.yum.add_rhel_repos() {
+hosts.remote.yum.add_external_rhel_repos() {
     local rh_mirror="http://download.eng.tlv.redhat.com/pub"
-    local rhel_mirror="${rh_mirror}/rhel/released/RHEL-7/7.1"
+    local rhel_mirror="${rh_mirror}/rhel/rel-eng/RHEL-7.2-20151001.0/compose"
 
     hosts.remote.yum.addrepo \
         'rhel' \
@@ -271,6 +276,33 @@ hosts.remote.yum.add_rhel_repos() {
     hosts.remote.yum.addrepo \
         'scl' \
         "${rh_mirror}/rhel/released/RHSCL/2.0/RHEL-7/Server/x86_64/os"
+}
+
+hosts.remote.yum.add_rhel_repos() {
+    hosts.remote.yum.addrepo 'rhel' 'http://repo/proxy/rhel'
+    hosts.remote.yum.addrepo 'rhel-optional' 'http://repo/proxy/rhel-optional'
+    hosts.remote.yum.addrepo 'scl' 'http://repo/proxy/scl'
+}
+
+hosts.remote.yum.add_satellite_repos() {
+    hosts.remote.yum.addrepo \
+        'satellite-6.1.0-rhel-7-candidate' \
+        'http://repo/proxy/satellite-6.1.0-rhel-7-candidate'
+}
+
+hosts.remote.yum.add_katello_repos() {
+    hosts.remote.yum.addrepo 'epel' 'http://repo/proxy/epel'
+    hosts.remote.yum.addrepo 'foreman' 'http://repo/proxy/foreman'
+    hosts.remote.yum.addrepo 'foreman-plugins' 'http://repo/proxy/foreman-plugins'
+    hosts.remote.yum.addrepo 'katello-candlepin' 'http://repo/proxy/katello-candlepin'
+    hosts.remote.yum.addrepo 'katello-client' 'http://repo/proxy/katello-client'
+    hosts.remote.yum.addrepo 'katello' 'http://repo/proxy/katello'
+    hosts.remote.yum.addrepo 'katello-pulp' 'http://repo/proxy/katello-pulp'
+    hosts.remote.yum.addrepo 'puppetlabs-deps' 'http://repo/proxy/puppetlabs-deps'
+    hosts.remote.yum.addrepo 'puppetlabs-devel' 'http://repo/proxy/puppetlabs-devel'
+    hosts.remote.yum.addrepo 'puppetlabs-products' 'http://repo/proxy/puppetlabs-products'
+    hosts.remote.yum.addrepo 'rhscl-ruby193-epel-7-x86_64' 'http://repo/proxy/rhscl-ruby193-epel-7-x86_64'
+    hosts.remote.yum.addrepo 'rhscl-v8314-epel-7-x86_64' 'http://repo/proxy/rhscl-v8314-epel-7-x86_64'
 }
 
 hosts.remote.yum.addrepo() {
@@ -349,7 +381,7 @@ robotello() {
 
 testenvcli.init() {
     #mkdir -p "${conf_SATELLITE_OSTF_WORKSPACE}"
-    testenvcli init \
+    "$conf_SATELLITE_OSTF_LAGOCLI" init \
         --template-repo-path="$repo_json" \
         "${conf_SATELLITE_OSTF_WORKSPACE}" \
         "$env_json"
@@ -357,13 +389,13 @@ testenvcli.init() {
 
 testenvcli.start() {
     with workspace_dir -- \
-        testenvcli start
+        "$conf_SATELLITE_OSTF_LAGOCLI" start
 }
 
 testenvcli.shell() {
     local host="${1:?}"
     with workspace_dir -- \
-        testenvcli shell "$host"
+        "$conf_SATELLITE_OSTF_LAGOCLI" shell "$host"
 }
 
 virtualenv.create() {
@@ -478,7 +510,7 @@ env_json.generate() {
 yaml_to_json <<EOF
 #cat <<EOF
 domains:
-$(for host in satellite repo; do
+$(for host in satellite repo host1 host2; do
     echo "    $host: $(env_json.generate_host)"
 done)
 nets:
@@ -521,19 +553,19 @@ repo_json.return() {
 
 repo_json.generate() {
     yaml_to_json <<EOF
-name: "in_office_repo"
+name: "bob"
 templates:
     rhel7_host:
         versions:
             v1:
-                source: "in-office-minidell"
-                handle: "rhel7/host/v1.qcow2"
-                timestamp: 1428328144
+                source: "bob"
+                handle: "rhel-guest-image-7.2-20150925.0.x86_64.qcow2"
+                timestamp: 1443128400
 sources:
-    in-office-minidell:
+    bob:
         type: http
         args:
-            baseurl: "http://10.35.1.12/repo/"
+            baseurl: "http://bob.eng.lab.tlv.redhat.com/templates/"
 EOF
 }
 
@@ -651,13 +683,10 @@ with() {
     # All the rest of the arguments are a command to run within the context
     yield=("$@")
 
-    if type -t "${cmd}.context" > /dev/null; then
+    if is_function "${cmd}.context"; then
         "${cmd}.context" "$varname" "${cmd_args[@]}" -- "${yield[@]}"
-    elif
-        type -t "${cmd}.get" >> /dev/null \
-        && type -t "${cmd}.return" >> /dev/null
-    then
-        # Have to us a tempfile so ${cmd}.get won't run in a subshell
+    elif is_function "${cmd}.get" && is_function "${cmd}.return"; then
+        # Have to use a tempfile so ${cmd}.get won't run in a subshell
         yeild_result=100
         cmd_outfile="$(mktemp)"
         exec 200>"$cmd_outfile" 201<"$cmd_outfile"
@@ -683,6 +712,11 @@ with() {
 shell_quote() {
     local singlequote="'"
     printf " '%s'" "${@//\'/'\\$singlequote'}"
+}
+
+is_function() {
+    local name="${1:?}"
+    [[ "$(type -t "$name")" == 'function' ]]
 }
 
 main "$@"
