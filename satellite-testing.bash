@@ -5,7 +5,8 @@ set -o pipefail
 
 main() {
     get_env_configuration "$@"
-    verbs.base
+    #verbs.base
+    verbs.playground
     #env_json.generate
     #repo_json.generate
     #environment.init
@@ -29,11 +30,19 @@ get_env_configuration() {
 
 verbs.base() {
     # Reach base setup level with all VMs up and with yum repos
-    environment.init
-    environment.start
-    hosts.set_host_level 'repo' 'playground'
+    #environment.init
+    #environment.start
+    # hosts.set_host_level 'repo' 'playground'
     for host in satellite host1 host2; do
         hosts.set_host_level "$host" 'base'
+    done
+}
+
+verbs.playground() {
+    # Reach "playground" steup level where satellite is deployed
+    # verbs.base
+    for host in satellite host1 host2; do
+        hosts.set_host_level "$host" 'playground'
     done
 }
 
@@ -55,7 +64,7 @@ hosts.set_host_level() {
     local host="${1:?}"
     local level="${2:?}"
 
-    if [[ ! "$level" =~ ^(base|palyground)$ ]]; then
+    if [[ ! "$level" =~ ^(base|playground)$ ]]; then
         level='base'
     fi
 
@@ -147,6 +156,27 @@ hosts.repo.remote.setup.brew_tag_repo() {
     repoman -c "$REPOMAN_CONF" "$repo_path" add "koji:@${tag}${inherit}"
 }
 
+hosts.satellite.remote.set_level() {
+    local level="${1:?}"
+    #local sat_mirror='http://downlaoad.eng.tlv.redhat.com/released/'
+    #local sat_url="$sat_mirror/Satellite-6/6.1-GA/RHEL-7/Satellite/x86_64/os/"
+    local sat_mirror_host='http://satellite6.lab.eng.rdu2.redhat.com'
+    local sat_mirror_dir="$sat_mirror_host/devel/candidate-trees/Satellite"
+    local sat_mirror="$sat_mirror_dir/Satellite-6.1.0-RHEL-7-20151111.0/"
+    local sat_url="$sat_mirror/compose/Satellite/x86_64/os/"
+
+    hosts.remote.set_level "$level"
+
+    hosts.remote.yum.add_external_rhel_repos
+    hosts.remote.yum.addrepo 'satellite' "$sat_url"
+
+    if [[ "$level" == 'playground' ]]; then
+        hosts.remote.net.set_static
+        hosts.remote.net.set_self_resolv satellite.example.com satellite
+        hosts.remote.satellite.setup.satellite
+    fi
+}
+
 hosts.remote.satellite.setup.satellite() {
     local PRIVATE_IFACE='eth1'
     local PRIVATE_CONN="$(hosts.remote.net.get_iface_conn $PRIVATE_IFACE)"
@@ -182,6 +212,8 @@ hosts.remote.set_level() {
     local level="${1:?}"
 
     hosts.remote.yum.zaprepos
+    # Remove cloud-init if its there to speed up booting
+    yum remove -y cloud-init || :
 }
 
 hosts.remote.net.set_static() {
@@ -265,11 +297,16 @@ hosts.remote.yum.zaprepos() {
 
 hosts.remote.yum.add_external_rhel_repos() {
     local rh_mirror="http://download.eng.tlv.redhat.com/pub"
-    local rhel_mirror="${rh_mirror}/rhel/rel-eng/RHEL-7.2-20151001.0/compose"
+    #local rhel_mirror="${rh_mirror}/rhel/rel-eng/RHEL-7.2-20151001.0/compose"
+    local rhel_mirror="${rh_mirror}/rhel/released/RHEL-7/7.1"
+    local rhel_z_mirror="${rh_mirror}/rhel/rel-eng/repos/rhel-7.1-z/"
 
     hosts.remote.yum.addrepo \
         'rhel' \
         "${rhel_mirror}/Server/x86_64/os"
+    hosts.remote.yum.addrepo \
+        'rhel-z' \
+        "${rhel_z_mirror}/x86_64"
     hosts.remote.yum.addrepo \
         'rhel-optional' \
         "${rhel_mirror}/Server-optional/x86_64/os"
@@ -532,7 +569,7 @@ nics:
 -   net: "testenv"
 -   net: "sat"
 disks:
--   template_name: "rhel7_host"
+-   template_name: "rhel7_1_host"
     type: "template"
     name: "root"
     dev: "vda"
@@ -555,7 +592,13 @@ repo_json.generate() {
     yaml_to_json <<EOF
 name: "bob"
 templates:
-    rhel7_host:
+    rhel7_1_host:
+        versions:
+            v1:
+                source: "bob"
+                handle: "rhel-guest-image-7.1-20150224.0.x86_64.qcow2"
+                timestamp: 1424728800
+    rhel7_2_host:
         versions:
             v1:
                 source: "bob"
