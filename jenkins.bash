@@ -104,6 +104,7 @@ hosts.builder.remote.set_level() {
         useradd --system --create-home --password "$jenkins_pwd" jenkins
         echo 'jenkins ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/jenkins
         yum install -y tito mock brewkoji
+        usermod -a -G mock jenkins
     fi
 }
 
