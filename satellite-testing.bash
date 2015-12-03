@@ -1,20 +1,13 @@
 #!/bin/bash
 # satellite-testing.bash - OSTF wrapper to enable Satellite testing.
 #
-set -o pipefail
+set -o pipefail -e
 
 main() {
     get_env_configuration "$@"
     #verbs.base
-    verbs.playground
-    #env_json.generate
-    #repo_json.generate
-    #environment.init
-    #environment.setup_hosts
-    #hosts.setup_host satellite
-    #hosts.get_host_ip satellite
-    #hosts.satellite.get_katello_password
-    #environment.run_robotello "$@"
+    #verbs.playground
+    verbs.test "$@"
 }
 
 get_env_configuration() {
@@ -30,8 +23,8 @@ get_env_configuration() {
 
 verbs.base() {
     # Reach base setup level with all VMs up and with yum repos
-    #environment.init
-    #environment.start
+    environment.init
+    environment.start
     # hosts.set_host_level 'repo' 'playground'
     for host in satellite host1 host2; do
         hosts.set_host_level "$host" 'base'
@@ -40,10 +33,16 @@ verbs.base() {
 
 verbs.playground() {
     # Reach "playground" steup level where satellite is deployed
-    # verbs.base
+    verbs.base
     for host in satellite host1 host2; do
         hosts.set_host_level "$host" 'playground'
     done
+}
+
+verbs.test() {
+    verbs.playground
+    local test_name="${1:-test-foreman-smoke}"
+    robotello "$test_name"
 }
 
 environment.init() {
@@ -54,10 +53,6 @@ environment.init() {
 
 environment.start() {
     testenvcli.start
-}
-
-environment.run_robotello() {
-    robotello "$@"
 }
 
 hosts.set_host_level() {
@@ -88,7 +83,9 @@ hosts.get_host_ip() {
 
     hosts.run_remote_functions \
         "$host" \
-        hosts.remote.net.get_conn_ip -- "$MGMT_IFACE" 2> /dev/null
+        hosts.remote.net.get_iface_ip \
+        "hosts.remote.net.*" \
+        -- "$MGMT_IFACE" 2> /dev/null
 }
 
 hosts.satellite.get_katello_password() {
@@ -284,6 +281,12 @@ hosts.remote.net.get_conn_ip() {
     | sed -nre 's/IP4.ADDRESS\[[0-9]\]:\s+([0-9\.]+)\/[0-9]+/\1/p'
 }
 
+hosts.remote.net.get_iface_ip() {
+    local iface="${1:?}"
+    local conn="$(hosts.remote.net.get_iface_conn $iface)"
+    hosts.remote.net.get_conn_ip "$conn"
+}
+
 hosts.remote.yum.zaprepos() {
     set -o pipefail
     find /etc/yum.repos.d/ -mindepth 1 -maxdepth 1 -type f -print0 \
@@ -369,12 +372,14 @@ hosts.run_remote_functions() {
     [[ "$1" == "--" ]] && shift
     local function_args=("$@")
 
+    echo "Invoking $main_function on $host" 1>&2
     {
         # Send TERM over so we get nicer output
         echo "export TERM=$TERM"
         glob_functions "$main_function" "${other_function_patterns[@]}"
         echo "$main_function $(shell_quote "${function_args[@]}")"
-    } | testenvcli.shell "$host"
+    } | testenvcli.shell "$host" || :
+    # Lago returns strage stuff from 'shell' so ignoring failures above
 }
 
 robotello.setup_here() {
@@ -384,23 +389,23 @@ robotello.setup_here() {
     pip install nose PyVirtualDisplay
     cat > 'robottelo.properties' <<EOF
 [main]
-server.hostname=$(hosts.get_host_ip satellite)
-server.ssh.key_private=${conf_SATELLITE_OSTF_WORKSPACE}/id_rsa \
-server.ssh.username=root
 project=sat
 locale=en_US
 remote=0
 smoke=0
 
-[foreman]
-admin.username=admin
-admin.password=$(hosts.satellite.get_katello_password)
+[server]
+hostname=$(hosts.get_host_ip satellite)
+ssh_key=${conf_SATELLITE_OSTF_WORKSPACE}/id_rsa
+ssh_username=root
+admin_username=admin
+admin_password=$(hosts.satellite.get_katello_password)
 EOF
 }
 
 robotello.invoke_here() {
     robotello.setup_here
-    nosetests "$@"
+    make "$@"
 }
 
 robotello() {
