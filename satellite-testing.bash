@@ -14,11 +14,15 @@ get_env_configuration() {
     # Read the environment configuration from command line arguments and
     # environment variables and setup script configuration
 
-    # The directory under which OSTF should setup the environment
-    local ws_default="$HOME/src/workspace/satellite-testing"
-    conf_SATELLITE_OSTF_WORKSPACE="${SATELLITE_OSTF_WORKSPACE:-"$ws_default"}"
+    # Where environments should be setup
+    local ws_root_default="$HOME/src/workspace"
+    conf_LAGO_WS_ROOT="${LAGO_WS_ROOT:-"$ws_root_default"}"
+    # The directory under which Lago should setup the environment
+    local ws_default="$conf_LAGO_WS_ROOT/satellite-testing"
+    conf_SATELLITE_LAGO_WORKSPACE="${SATELLITE_LAGO_WORKSPACE:-"$ws_default"}"
+    # Where is lago
     local lagocli_default="/usr/bin/lagocli"
-    conf_SATELLITE_OSTF_LAGOCLI="${SATELLITE_OSTF_LAGOCLI:-"$lagocli_default"}"
+    conf_SATELLITE_LAGO_LAGOCLI="${SATELLITE_LAGO_LAGOCLI:-"$lagocli_default"}"
 }
 
 verbs.base() {
@@ -396,7 +400,7 @@ smoke=0
 
 [server]
 hostname=$(hosts.get_host_ip satellite)
-ssh_key=${conf_SATELLITE_OSTF_WORKSPACE}/id_rsa
+ssh_key=${conf_SATELLITE_LAGO_WORKSPACE}/id_rsa
 ssh_username=root
 admin_username=admin
 admin_password=$(hosts.satellite.get_katello_password)
@@ -409,9 +413,9 @@ robotello.invoke_here() {
 }
 
 robotello() {
-    local venv_path="${conf_SATELLITE_OSTF_WORKSPACE}/virtualenvs/robotello"
+    local venv_path="${conf_SATELLITE_LAGO_WORKSPACE}/virtualenvs/robotello"
     local upstream_git='https://github.com/SatelliteQE/robottelo'
-    local git_path="${conf_SATELLITE_OSTF_WORKSPACE}/git_repos/robotello"
+    local git_path="${conf_SATELLITE_LAGO_WORKSPACE}/git_repos/robotello"
 
     with virtualenv --create "$venv_path" -- \
         with git_repo \
@@ -422,22 +426,22 @@ robotello() {
 }
 
 testenvcli.init() {
-    #mkdir -p "${conf_SATELLITE_OSTF_WORKSPACE}"
-    "$conf_SATELLITE_OSTF_LAGOCLI" init \
+    #mkdir -p "${conf_SATELLITE_LAGO_WORKSPACE}"
+    "$conf_SATELLITE_LAGO_LAGOCLI" init \
         --template-repo-path="$repo_json" \
-        "${conf_SATELLITE_OSTF_WORKSPACE}" \
+        "${conf_SATELLITE_LAGO_WORKSPACE}" \
         "$env_json"
 }
 
 testenvcli.start() {
     with workspace_dir -- \
-        "$conf_SATELLITE_OSTF_LAGOCLI" start
+        "$conf_SATELLITE_LAGO_LAGOCLI" start
 }
 
 testenvcli.shell() {
     local host="${1:?}"
     with workspace_dir -- \
-        "$conf_SATELLITE_OSTF_LAGOCLI" shell "$host"
+        "$conf_SATELLITE_LAGO_LAGOCLI" shell "$host"
 }
 
 virtualenv.create() {
@@ -618,7 +622,7 @@ EOF
 }
 
 workspace_dir.get() {
-    directory.get "${conf_SATELLITE_OSTF_WORKSPACE}"
+    directory.get "${conf_SATELLITE_LAGO_WORKSPACE}"
 }
 
 workspace_dir.return() {

@@ -13,9 +13,13 @@ get_env_configuration() {
     # Read the environment configuration from command line arguments and
     # environment variables and setup script configuration
 
+    # Where environments should be setup
+    local ws_root_default="$HOME/src/workspace"
+    conf_LAGO_WS_ROOT="${LAGO_WS_ROOT:-"$ws_root_default"}"
     # The directory under which Lago should setup the environment
-    local ws_default="$HOME/src/workspace/jenkins"
+    local ws_default="$conf_LAGO_WS_ROOT/jenkins"
     conf_JENKINS_LAGO_WORKSPACE="${JENKINS_LAGO_WORKSPACE:-"$ws_default"}"
+    # Where is lago
     local lagocli_default="/usr/bin/lagocli"
     conf_JENKINS_LAGO_LAGOCLI="${JENKINS_LAGO_LAGOCLI:-"$lagocli_default"}"
 }
