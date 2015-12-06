@@ -4,9 +4,9 @@ This repository includes shell scripts for configuring testing environments on
 to of [Lago][1], and running some automated tests when applicable.
 
 This repository includes the following scripts:
-* [satellite-testing.bash](#a2) - A script for testing [Satellite][2] with
+* [satellite-testing.bash](#a3) - A script for testing [Satellite][2] with
   [Robottelo][3].
-* [jenkins.bash](#a3) - A script for setting up a [Jenkins][4] job testing
+* [jenkins.bash](#a4) - A script for setting up a [Jenkins][4] job testing
   environment.
 
 [1]: http://lago.readthedocs.org/en/latest/
@@ -30,7 +30,32 @@ varaible whenever you run one of the scripts.
 
 [5]: http://lago.readthedocs.org/en/latest/README.html
 
-## <a name="a2"></a>satellite-testing.bash
+## <a name="a2"></a>Known Lago issues
+
+At the time of writing this README there are several issues that might be hit
+when trying to use the scripts in this repository:
+
+* The first time one of the scripts from this repository will be run on a given
+  machine, it will probably run very slowly because it needs to download the
+  RHEL7 cloud image. For consequent runs, the image will be stored locally by
+  Lago.
+* There is a long delay between Lago bringing up the VMs and interesting things
+  beginning to happen on them. This is because of cloud-init in the guest image
+  delaying sshd startup. We have [Bug 1286801][6] (Make lago support cloud-init)
+  to work-around this.
+* If running on EL7 you may hit [Bug 1285368][7] (Running 'virt-sysprep' in
+  parallel on EL7 fails).  We have [Bug 1285352][8] (lagocli init fails on el7
+  when setting up more then one VM) to work around this.
+* Depending on your **sudo** setup, you may hit [Bug 1285358][9] (Lago sudo
+  setup can get overridden). To work around this for now please run `sudo cp
+  /etc/sudoers.d/{,z_}lago`.
+
+[6]: https://bugzilla.redhat.com/show_bug.cgi?id=1286801
+[7]: https://bugzilla.redhat.com/show_bug.cgi?id=1285368
+[8]: https://bugzilla.redhat.com/show_bug.cgi?id=1285352
+[9]: https://bugzilla.redhat.com/show_bug.cgi?id=1285358
+
+## <a name="a3"></a>satellite-testing.bash
 
 The **satellite-testing.bash** script is used to setup a testing environment
 for **Satellite** and run **Robottelo** tests against it.
@@ -82,6 +107,20 @@ To perform the cleanup, the following command can be run:
 Note that the pathes in the above command need to be changed if the location of
 the testing environment was customized.
 
+### Known issues
+
+The following issues might affect you when trying to use this script:
+
+**Note:** Issues in [Known Lago issues](#a2) apply
+
+* When running on your laptop, you will see Robotello using Firefox. I found
+  this quite amusing, so left it like this for now. But this will probably need
+  to be changed to disengage the tests from the locally running UI.
+* Some of the Robotello smoke tests are failing, I'm not sure if this is some
+  configuration error in my part.
+* You need to be connected to the Red Hat VPN when running this script because
+  it tries to install Satellite from the compose directory.
+
 ### Script action in detail
 
 This script sets up a Lago environment with the following virtual hosts:
@@ -108,7 +147,7 @@ Once the testing environment is created, the script does the following:
    the **Lago** virtual environment and the **Satellite** instance within.
 4. Run **Robottelo** tests.
 
-## <a name="a3"></a>jenkins.bash
+## <a name="a4"></a>jenkins.bash
 
 The **jenkins.bash** script can be used to setup a Lago environment useful for
 creating and testing **Jenkins** jobs.
@@ -147,3 +186,8 @@ fail. The directory above it must exist however. The path to the testing
 environment directory can be customized by setting the `LAGO_WS_ROOT` variable
 as noted in the [General Setup](#a1) section above, or by setting the
 `JENKINS_LAGO_WORKSPACE` environment variable.
+
+### Known issues
+
+Issues in [Known Lago issues](#a2) might affect you when trying to use this
+script.
